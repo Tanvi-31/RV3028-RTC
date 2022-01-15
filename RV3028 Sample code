@@ -1,0 +1,150 @@
+/*
+ * File:   main.c
+ * Author: Tanvi Sheth
+ *
+ * Created on October 17, 2021, 8:33 PM
+ */
+
+//using mssp1 and corresponding registers
+#pragma config FEXTOSC = HS     //Oscillator Selection bits (HS oscillator)
+#pragma config WDTE = ON        //Watchdog Timer Enable bit (WDT enabled)
+#pragma config CPD = ON         //Code memory protection on
+#pragma config ZCD=ON           //Zero crossdetect
+
+#include <xc.h>
+#define _XTAL_FREQ 16000000    //We are running on 16 MHz crystal
+
+int sec,min,hour,day,date,month,year;
+
+int  B2D(unsigned char to_convert)     //converting bcd to decimal
+{
+   return (to_convert >> 4) * 10 + (to_convert & 0x0F); 
+}
+
+unsigned char D2B (int to_convert)    //converting decimal to bcd
+{
+   return ((to_convert / 10) << 4) + (to_convert % 10);
+}
+
+
+void i2c_init()
+{
+    TRISC3=1;                                          //SCL1 as input
+    TRISC4=1;                                          //SDA1 as input
+    SSP1CON1=0x28;                                     //Enabling serial transmission and selecting i2c master mode
+    SSP1ADD=0xFF;                                      //clock 15.625 KHz, for 16 HZ Fosc
+    SSP1STAT= 0x80;                                    //slew rate disabled for standard frequencies
+    SSP1IF=0;                                          //SSP Interrupt flag rest
+}
+
+void i2c_hold()                                        //makes sure i2c bus is not busy
+{
+      while (( SSP1CON2 & 0x1F ) || ( SSP1STAT & 0x04 )); //checking for PEN,SEN,RSEN,RCEN,ACKEN,R/W bit 
+}
+
+void i2c_wait()          
+{
+    while(SSP1IF=0);                               //wait for completion of current operation and setting of SSP1IF Flag
+    SSP1IF=0;                                      //reset SSP1IF flag
+}
+
+void i2c_start()
+{
+    i2c_hold();                               
+    SEN1=1;                                       //Initiate start bit
+    i2c_wait();
+}
+
+void i2c_end()
+{
+    i2c_hold();
+    PEN1=1;                                      //Initiate stop bit
+    i2c_wait();
+    SSPEN1=0;                                    //Disable serial transmission
+    
+}
+
+void i2c_restart()
+{
+    i2c_hold();
+    RSEN1=1;                                     //Initiate restart condition
+    i2c_wait();                                 //Wait till completion of event
+}
+
+void i2c_write(unsigned char data)
+{
+
+    Label: SSP1BUF=data;                          //Input data to buffer
+    i2c_wait();                                   //Wait till completion of event
+    while(ACKSTAT1)                               //check if acknowledgment signal received 
+    {
+        i2c_restart();                            //If no acknowledgment received, give restart signal and transmit data again
+        goto Label;
+    }
+
+}
+
+unsigned char i2c_read(int ack)              
+{
+    RCEN1=1;                                     //Enable Reception
+    while(!BF1);                                 //Wait till buffer is full
+    RCEN1=0;                                     //Make reception idle
+    ACKDT1=ack;                                  //Acknowledge data bit, 1 for end of receiving(NACK):0 for more to receive(ACK)
+    ACKEN1=1;                                    //Sending ACKDT1 bit
+    i2c_wait();
+    return SSP1BUF;                              //Return received data 
+   
+    
+}
+
+void modify_time(int min,int hour,int day,int date,int month,int year)
+{
+    i2c_start();  
+    i2c_write(0xA4);                                  //Accessing slave(RV-3028) address
+    i2c_write(0x01);                                  //Accessing minutes register
+    i2c_write(D2B(min));                              //Writing minutes 00-59
+    i2c_write(D2B(hour));                             //Writing hours 24 hour format 0-23
+    i2c_write(D2B(day));                              //Writing day 0:Sunday 6:Saturday
+    i2c_write(D2B(date));                             //Writing Date 0-31
+    i2c_write(D2B(month));                            //Writing Month 1-12
+    i2c_write(D2B(year));                             //Writing Year 00-99
+    i2c_end();
+   
+}
+
+void read_time()
+{
+    i2c_start(); 
+    i2c_write(0xA4);                                //Accessing slave(RV-3028) address
+    i2c_write(0x01);                                //Accessing minutes register
+    i2c_restart();                                  //Restarting i2c to change slave address
+    i2c_write(0xA5);                                //Accessing slave read register
+    min=B2D(i2c_read(0));                           //read minutes and send ack
+    hour=B2D(i2c_read(0));                          //read hours and send ack
+    day=B2D(i2c_read(0));                           //read day and send ack
+    date=B2D(i2c_read(0));                          //read date and send acl
+    month=B2D(i2c_read(0));                         //read month and send ack
+    year=B2D(i2c_read(1));                          //read year and send nack(end of reading operation)
+    i2c_end();
+    
+}
+
+
+
+void main() 
+{
+    i2c_init();                                        //Initialize I2c with 100 Khz Frequency
+    min=30;                                            //Setting random values
+    hour=7;
+    day=1;
+    date=18;
+    month=10;
+    year=21;
+    modify_time(min,hour,day,date,month,year);         //Calling modify_time() to set time in RV 3028
+    while(1)
+    {
+     read_time();                                      //Reading time after every 100 ms
+     __delay_ms(100);
+    }
+    
+}
